@@ -86,7 +86,9 @@ AI Assistant: "Build a full-stack user authentication system"
   - View agent logs from UI
 - ✅ **Docker Integration**
   - Container management
-  - Shared workspace mounting
+  - **Isolated Agent Workspaces** - Docker volumes per agent for complete isolation
+  - **Git-based Development** - Automatic repository cloning with agent-specific branches
+  - Shared workspace mounting (legacy compatibility)
   - Agent environment configuration
   - Runtime config generation via AGENT_CONFIG env var
   - **Git Integration** - Automatic host credential mounting for repository operations

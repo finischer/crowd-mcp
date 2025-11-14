@@ -34,6 +34,36 @@ fi
 
 cd /workspace
 
+# Git workspace status check (for isolated workspaces)
+if [ -n "$REPOSITORY" ]; then
+  echo "========================================="
+  echo "Git Workspace Status"
+  echo "Repository: $REPOSITORY"
+  echo "========================================="
+  
+  if [ -d ".git" ]; then
+    echo "📂 Git repository detected"
+    
+    # Show current branch
+    CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
+    echo "🌿 Current branch: $CURRENT_BRANCH"
+    
+    # Show repository status
+    echo "📊 Repository status:"
+    git status --porcelain || echo "Unable to get git status"
+    
+    # Show last commit
+    echo "📝 Last commit:"
+    git log -1 --oneline 2>/dev/null || echo "Unable to get git log"
+  else
+    echo "⚠️ No git repository found in workspace"
+    echo "This might indicate a git setup issue"
+  fi
+  echo "========================================="
+else
+  echo "📁 Using shared workspace (no repository specified)"
+fi
+
 echo "Starting OpenCode ACP as PID 1 with preserved stdin..."
 echo "Configuration will be provided via ACP session creation"
 

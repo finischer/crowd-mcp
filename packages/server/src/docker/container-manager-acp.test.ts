@@ -276,5 +276,128 @@ mcpServers:
         osHomedirSpy.mockRestore();
       });
     });
+
+    describe("Isolated Workspaces", () => {
+      let mockVolume: any;
+
+      beforeEach(() => {
+        mockVolume = {
+          remove: vi.fn().mockResolvedValue(undefined),
+        };
+
+        // Mock Docker volume operations
+        (mockDocker as any).listVolumes = vi.fn().mockResolvedValue({
+          Volumes: []
+        });
+        (mockDocker as any).createVolume = vi.fn().mockResolvedValue(undefined);
+        (mockDocker as any).getVolume = vi.fn().mockReturnValue(mockVolume);
+
+        // Mock Git setup container
+        const mockSetupContainer = {
+          start: vi.fn().mockResolvedValue(undefined),
+          logs: vi.fn().mockResolvedValue({
+            on: vi.fn((event, callback) => {
+              if (event === 'end') {
+                setTimeout(callback, 10);
+              }
+            })
+          }),
+          remove: vi.fn().mockResolvedValue(undefined)
+        };
+        
+        (mockDocker as any).createContainer = vi.fn()
+          .mockResolvedValueOnce(mockSetupContainer) // First call for git setup
+          .mockResolvedValue(mockContainer); // Second call for agent container
+      });
+
+      it("should create isolated workspace with repository", async () => {
+        const config = {
+          agentId: "test-agent-isolated",
+          task: "Test isolated workspace",
+          repository: "https://github.com/test/repo.git",
+          agentType: "coder",
+        };
+
+        const result = await containerManager.spawnAgent(config);
+
+        expect(result).toEqual({
+          id: "test-agent-isolated",
+          task: "Test isolated workspace",
+          containerId: "container-123",
+        });
+
+        // Verify volume creation
+        expect(mockDocker.createVolume).toHaveBeenCalledWith({
+          Name: "agent-test-agent-isolated-workspace"
+        });
+
+        // Verify git setup container creation
+        expect(mockDocker.createContainer).toHaveBeenCalledTimes(2);
+        
+        // Verify final agent container uses volume mount instead of workspace
+        const finalContainerCall = (mockDocker.createContainer as any).mock.calls[1][0];
+        expect(finalContainerCall.HostConfig.Binds).toEqual(
+          expect.arrayContaining([
+            "agent-test-agent-isolated-workspace:/workspace:rw"
+          ])
+        );
+
+        // Verify REPOSITORY env variable is passed
+        expect(finalContainerCall.Env).toEqual(
+          expect.arrayContaining([
+            "REPOSITORY=https://github.com/test/repo.git"
+          ])
+        );
+      });
+
+      it("should support backward compatibility with workspace parameter", async () => {
+        const config = {
+          agentId: "test-agent-legacy",
+          task: "Test legacy workspace",
+          workspace: tempDir,
+          agentType: "coder",
+        };
+
+        const result = await containerManager.spawnAgent(config);
+
+        expect(result).toEqual({
+          id: "test-agent-legacy",
+          task: "Test legacy workspace",
+          containerId: "container-123",
+        });
+
+        // Should not create volume for legacy mode
+        expect(mockDocker.createVolume).not.toHaveBeenCalled();
+
+        // Should use traditional workspace mount
+        expect(mockDocker.createContainer).toHaveBeenCalledWith(
+          expect.objectContaining({
+            HostConfig: expect.objectContaining({
+              Binds: expect.arrayContaining([`${tempDir}:/workspace:rw`]),
+            }),
+          }),
+        );
+      });
+
+      it("should cleanup agent volumes", async () => {
+        await containerManager.cleanupAgent("test-agent-cleanup");
+
+        expect(mockDocker.getVolume).toHaveBeenCalledWith("agent-test-agent-cleanup-workspace");
+        expect(mockVolume.remove).toHaveBeenCalled();
+      });
+
+      it("should validate configuration", async () => {
+        const invalidConfig = {
+          agentId: "test-agent-invalid",
+          task: "Test invalid config",
+          // Missing both workspace and repository
+          agentType: "coder",
+        };
+
+        await expect(containerManager.spawnAgent(invalidConfig)).rejects.toThrow(
+          "Either workspace or repository must be specified"
+        );
+      });
+    });
   });
 });

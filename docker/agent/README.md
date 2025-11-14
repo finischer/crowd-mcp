@@ -7,7 +7,7 @@ This directory contains the Dockerfile for the autonomous agent container used b
 - **Node.js 20 Alpine** - Lightweight Node.js runtime
 - **Git** - Version control system for repository operations
 - **OpenCode** - AI-powered autonomous coding agent
-- **Workspace** - Mounted volume for shared code access
+- **Isolated Workspaces** - Docker volumes for agent-specific workspaces
 - **Git Credentials** - Automatically mounted from host system (read-only)
 
 ## Building the Image
@@ -27,9 +27,24 @@ This image is used automatically by the `ContainerManager` when spawning agents 
 The container manager will:
 
 1. Start a container from this image
-2. Mount the workspace directory
-3. Mount Git credentials from host system (if available)
-4. Execute the agent's task via OpenCode
+2. Create isolated Docker volume for agent workspace (if repository specified)
+3. Setup Git repository with automatic clone/pull and agent-specific branch
+4. Mount Git credentials from host system (if available)
+5. Execute the agent's task via OpenCode
+
+## Workspace Modes
+
+### Isolated Workspaces (Recommended)
+When a `repository` parameter is provided, agents get:
+- **Dedicated Docker Volume** - Complete isolation from other agents
+- **Automatic Git Setup** - Clone repository and create agent-specific branch
+- **Independent Development** - No file conflicts between agents
+
+### Shared Workspace (Legacy)
+When a `workspace` parameter is provided:
+- **Shared Directory** - All agents work in the same filesystem
+- **Manual Coordination** - Potential for file conflicts
+- **Backward Compatibility** - For existing workflows
 
 ## Git Integration
 

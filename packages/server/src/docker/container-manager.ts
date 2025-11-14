@@ -11,7 +11,8 @@ import * as os from "os";
 export interface SpawnAgentConfig {
   agentId: string;
   task: string;
-  workspace: string;
+  workspace?: string; // Optional for backward compatibility
+  repository?: string; // Optional Git repository URL for isolated workspaces
   agentType?: string;
 }
 
@@ -56,9 +57,156 @@ export class ContainerManager {
     return gitBinds;
   }
 
+  /**
+   * Create a Docker volume for an agent's isolated workspace
+   * @param agentId - Unique agent identifier
+   * @returns Volume name
+   */
+  private async createAgentVolume(agentId: string): Promise<string> {
+    const volumeName = `agent-${agentId}-workspace`;
+    
+    try {
+      // Check if volume already exists
+      const volumes = await this.docker.listVolumes();
+      const existingVolume = volumes.Volumes?.find(v => v.Name === volumeName);
+      
+      if (!existingVolume) {
+        await this.docker.createVolume({ Name: volumeName });
+        console.log(`📦 Created Docker volume: ${volumeName}`);
+      } else {
+        console.log(`📦 Using existing Docker volume: ${volumeName}`);
+      }
+      
+      return volumeName;
+    } catch (error) {
+      throw new Error(`Failed to create volume for agent ${agentId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Setup Git workspace in the agent volume
+   * @param agentId - Unique agent identifier  
+   * @param repository - Git repository URL
+   * @param volumeName - Docker volume name
+   */
+  private async setupGitWorkspace(agentId: string, repository: string, volumeName: string): Promise<void> {
+    try {
+      // Create temporary container to setup git workspace
+      const setupContainer = await this.docker.createContainer({
+        Image: "crowd-mcp-agent:latest",
+        Cmd: ["/bin/sh", "-c", `
+          set -e
+          cd /workspace
+          
+          # Check if repository already exists
+          if [ -d ".git" ]; then
+            echo "📥 Pulling latest changes from repository..."
+            git pull origin main || git pull origin master || true
+          else
+            echo "📥 Cloning repository: ${repository}"
+            git clone ${repository} .
+          fi
+          
+          # Create agent-specific branch
+          git checkout -b agent-${agentId} || git checkout agent-${agentId}
+          echo "🌿 Working on branch: agent-${agentId}"
+        `],
+        HostConfig: {
+          Binds: [
+            `${volumeName}:/workspace:rw`,
+            ...this.buildGitBinds(os.homedir())
+          ]
+        }
+      });
+
+      await setupContainer.start();
+      
+      // Wait for setup to complete
+      const stream = await setupContainer.logs({
+        stdout: true,
+        stderr: true,
+        follow: true
+      });
+      
+      return new Promise((resolve, reject) => {
+        let output = '';
+        stream.on('data', (chunk) => {
+          output += chunk.toString();
+        });
+        
+        stream.on('end', async () => {
+          try {
+            await setupContainer.remove();
+            console.log(`✅ Git workspace setup completed for agent ${agentId}`);
+            console.log(output);
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        });
+        
+        stream.on('error', reject);
+      });
+      
+    } catch (error) {
+      throw new Error(`Failed to setup git workspace for agent ${agentId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Clean up agent's Docker volume
+   * @param agentId - Unique agent identifier
+   */
+  private async cleanupAgentVolume(agentId: string): Promise<void> {
+    const volumeName = `agent-${agentId}-workspace`;
+    
+    try {
+      const volume = this.docker.getVolume(volumeName);
+      await volume.remove();
+      console.log(`🧹 Cleaned up Docker volume: ${volumeName}`);
+    } catch (error) {
+      // Volume might not exist or be in use - log but don't fail
+      console.log(`⚠️ Could not cleanup volume ${volumeName}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
   async spawnAgent(config: SpawnAgentConfig): Promise<Agent> {
-    // Load environment variables from .crowd/opencode/.env and .env.local
-    const envVars = this.envLoader.loadEnvVars(config.workspace);
+    // Validate configuration - either workspace or repository must be provided
+    if (!config.workspace && !config.repository) {
+      throw new Error("Either workspace or repository must be specified");
+    }
+
+    // Determine workspace strategy
+    const useIsolatedWorkspace = !!config.repository;
+    let workspaceBinds: string[];
+    let workspacePath: string;
+
+    if (useIsolatedWorkspace) {
+      // Create isolated workspace with Git integration
+      console.log(`🔨 Creating isolated workspace for agent ${config.agentId} with repository: ${config.repository}`);
+      
+      const volumeName = await this.createAgentVolume(config.agentId);
+      
+      try {
+        await this.setupGitWorkspace(config.agentId, config.repository!, volumeName);
+        workspaceBinds = [`${volumeName}:/workspace:rw`];
+        workspacePath = '/workspace'; // Inside container
+        console.log(`✅ Isolated workspace ready for agent ${config.agentId}`);
+      } catch (error) {
+        console.error(`❌ Git workspace setup failed for agent ${config.agentId}:`, error);
+        console.log(`🔄 Falling back to empty isolated workspace`);
+        workspaceBinds = [`${volumeName}:/workspace:rw`];
+        workspacePath = '/workspace';
+      }
+    } else {
+      // Legacy shared workspace mode
+      console.log(`📁 Using shared workspace for agent ${config.agentId}: ${config.workspace}`);
+      workspaceBinds = [`${config.workspace}:/workspace:rw`];
+      workspacePath = config.workspace!;
+    }
+
+    // Load environment variables (use workspace path or empty string for isolated)
+    const envVars = this.envLoader.loadEnvVars(workspacePath === '/workspace' ? '' : workspacePath);
 
     // Build Agent MCP Server URL for container
     const agentMcpUrl = `http://host.docker.internal:${this.agentMcpPort}/mcp`;
@@ -69,13 +217,14 @@ export class ContainerManager {
       `TASK=${config.task}`,
       `AGENT_MCP_URL=${agentMcpUrl}`,
       `AGENT_TYPE=${config.agentType || "default"}`, // Pass agent name for --agent flag
+      ...(config.repository ? [`REPOSITORY=${config.repository}`] : []), // Pass repository URL to container
       ...envVars,
     ];
 
-    // Generate ACP MCP servers (messaging server always included)
+    // Generate ACP MCP servers (messaging server always included) 
     const acpResult = await this.configGenerator.generateAcpMcpServers(
       config.agentType,
-      config.workspace,
+      useIsolatedWorkspace ? '' : workspacePath,
       {
         agentId: config.agentId,
         agentMcpPort: this.agentMcpPort,
@@ -88,7 +237,7 @@ export class ContainerManager {
 
     // Build volume binds - workspace + Git credentials if available
     const binds = [
-      `${config.workspace}:/workspace:rw`,
+      ...workspaceBinds,
       ...this.buildGitBinds(os.homedir()),
     ];
 
@@ -135,5 +284,18 @@ export class ContainerManager {
       task: config.task,
       containerId: container.id || "",
     };
+  }
+
+  /**
+   * Cleanup agent resources including Docker volume (for isolated workspaces)
+   * @param agentId - Unique agent identifier
+   */
+  async cleanupAgent(agentId: string): Promise<void> {
+    try {
+      // Try to clean up the agent's volume if it exists
+      await this.cleanupAgentVolume(agentId);
+    } catch (error) {
+      console.error(`Error during agent cleanup for ${agentId}:`, error);
+    }
   }
 }
