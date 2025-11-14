@@ -4,6 +4,9 @@ import { EnvLoader } from "../config/index.js";
 import { AgentDefinitionLoader } from "../agent-config/agent-definition-loader.js";
 import { ConfigGenerator } from "../agent-config/config-generator.js";
 import type { AgentMcpServer } from "../mcp/agent-mcp-server.js";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
 
 export interface SpawnAgentConfig {
   agentId: string;
@@ -28,6 +31,29 @@ export class ContainerManager {
     // Initialize agent configuration components
     const loader = new AgentDefinitionLoader();
     this.configGenerator = new ConfigGenerator(loader);
+  }
+
+  /**
+   * Build Git-related volume binds for mounting host Git credentials and config
+   * @param userHome - Path to user home directory
+   * @returns Array of Docker volume bind strings
+   */
+  private buildGitBinds(userHome: string): string[] {
+    const gitBinds: string[] = [];
+    
+    // Mount .gitconfig if it exists (for user name, email, etc.)
+    const gitConfigPath = path.join(userHome, '.gitconfig');
+    if (fs.existsSync(gitConfigPath)) {
+      gitBinds.push(`${gitConfigPath}:/root/.gitconfig:ro`);
+    }
+    
+    // Mount .git-credentials if it exists (for HTTPS credentials)
+    const gitCredentialsPath = path.join(userHome, '.git-credentials');
+    if (fs.existsSync(gitCredentialsPath)) {
+      gitBinds.push(`${gitCredentialsPath}:/root/.git-credentials:ro`);
+    }
+    
+    return gitBinds;
   }
 
   async spawnAgent(config: SpawnAgentConfig): Promise<Agent> {
@@ -60,8 +86,11 @@ export class ContainerManager {
 
     // No longer need AGENT_CONFIG_BASE64 - ACP handles configuration via session creation
 
-    // Build volume binds - only workspace (no config mount needed)
-    const binds = [`${config.workspace}:/workspace:rw`];
+    // Build volume binds - workspace + Git credentials if available
+    const binds = [
+      `${config.workspace}:/workspace:rw`,
+      ...this.buildGitBinds(os.homedir()),
+    ];
 
     const container = await this.docker.createContainer({
       name: `agent-${config.agentId}`,

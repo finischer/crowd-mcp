@@ -89,6 +89,7 @@ AI Assistant: "Build a full-stack user authentication system"
   - Shared workspace mounting
   - Agent environment configuration
   - Runtime config generation via AGENT_CONFIG env var
+  - **Git Integration** - Automatic host credential mounting for repository operations
 
 **Documentation:**
 

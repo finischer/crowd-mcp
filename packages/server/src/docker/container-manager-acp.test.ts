@@ -9,6 +9,7 @@ import type { AgentMcpServer } from "../mcp/agent-mcp-server.js";
 const mockContainer = {
   id: "container-123",
   start: vi.fn().mockResolvedValue(undefined),
+  remove: vi.fn().mockResolvedValue(undefined),
 };
 
 const mockDocker = {
@@ -214,6 +215,66 @@ mcpServers:
           }),
         ]),
       );
+    });
+
+    describe("Git Credentials Mounting", () => {
+      it("should mount .gitconfig and .git-credentials if they exist", async () => {
+        // Create test Git files in a temporary home directory  
+        const testHome = join(tempDir, "test-home");
+        await mkdir(testHome, { recursive: true });
+        await writeFile(join(testHome, ".gitconfig"), "[user]\n  name = Test User\n  email = test@example.com");
+        await writeFile(join(testHome, ".git-credentials"), "https://token@github.com");
+
+        // Spy on os.homedir to return our test directory
+        const osHomedirSpy = vi.spyOn(require("os"), "homedir").mockReturnValue(testHome);
+
+        await containerManager.spawnAgent({
+          agentId: "git-test-agent",
+          task: "Test Git mounting",
+          workspace: tempDir,
+        });
+
+        // Verify container creation with Git binds
+        expect(mockDocker.createContainer).toHaveBeenCalledWith(
+          expect.objectContaining({
+            HostConfig: expect.objectContaining({
+              Binds: expect.arrayContaining([
+                `${tempDir}:/workspace:rw`,
+                `${testHome}/.gitconfig:/root/.gitconfig:ro`,
+                `${testHome}/.git-credentials:/root/.git-credentials:ro`,
+              ]),
+            }),
+          }),
+        );
+
+        osHomedirSpy.mockRestore();
+      });
+
+      it("should work without Git files present", async () => {
+        // Use a directory without Git files
+        const testHome = join(tempDir, "empty-home");
+        await mkdir(testHome, { recursive: true });
+
+        // Spy on os.homedir to return our test directory
+        const osHomedirSpy = vi.spyOn(require("os"), "homedir").mockReturnValue(testHome);
+
+        await containerManager.spawnAgent({
+          agentId: "no-git-test-agent", 
+          task: "Test without Git files",
+          workspace: tempDir,
+        });
+
+        // Verify container creation with only workspace bind
+        expect(mockDocker.createContainer).toHaveBeenCalledWith(
+          expect.objectContaining({
+            HostConfig: expect.objectContaining({
+              Binds: [`${tempDir}:/workspace:rw`],
+            }),
+          }),
+        );
+
+        osHomedirSpy.mockRestore();
+      });
     });
   });
 });

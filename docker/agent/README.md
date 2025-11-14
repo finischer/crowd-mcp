@@ -5,8 +5,10 @@ This directory contains the Dockerfile for the autonomous agent container used b
 ## What's Inside
 
 - **Node.js 20 Alpine** - Lightweight Node.js runtime
+- **Git** - Version control system for repository operations
 - **OpenCode** - AI-powered autonomous coding agent
 - **Workspace** - Mounted volume for shared code access
+- **Git Credentials** - Automatically mounted from host system (read-only)
 
 ## Building the Image
 
@@ -26,32 +28,52 @@ The container manager will:
 
 1. Start a container from this image
 2. Mount the workspace directory
-3. Execute the agent's task via OpenCode
+3. Mount Git credentials from host system (if available)
+4. Execute the agent's task via OpenCode
+
+## Git Integration
+
+The container automatically includes Git support with the following features:
+
+- **Git Installation**: Git is pre-installed in the container
+- **Credential Mounting**: Host Git credentials are automatically mounted (read-only)
+  - `~/.gitconfig` → `/root/.gitconfig` (user configuration)
+  - `~/.git-credentials` → `/root/.git-credentials` (stored credentials)
+- **Repository Operations**: Agents can clone repositories using host credentials
+- **Security**: Credentials are mounted read-only for security
+
+### Git Setup Requirements
+
+For agents to use Git, ensure your host system has:
+
+```bash
+# Git configuration (required)
+git config --global user.name "Your Name"
+git config --global user.email "your.email@example.com"
+
+# Git credentials store (optional, for private repos)
+git config --global credential.helper store
+# Then authenticate once to store credentials:
+git clone https://github.com/your-private-repo.git
+```
 
 ## Manual Testing
 
 If you want to test the container manually:
 
-````bash
-# Run the container
-
 ```bash
+# Run the container
 docker run --rm \
   -e AGENT_ID=test-123 \
   -e TASK="echo hello" \
   -v $(pwd):/workspace \
   crowd-mcp-agent:latest
-````
 
-# Attach to the running container
-
+## Attach to the running container
 docker exec -it test-agent sh
 
-# Inside the container, you can run OpenCode
-
+## Inside the container, you can run OpenCode
 opencode --help
-
-```
 
 ## Container Lifecycle
 
